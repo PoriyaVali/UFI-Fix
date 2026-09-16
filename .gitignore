@@ -1,0 +1,14 @@
+build/
+dist/
+work/
+work2/
+spec/
+spec2/
+setup_dist/
+setup_dist2/
+__pycache__/
+*.pyc
+*.spec
+*.log
+tron_*.png
+icon_preview.png
