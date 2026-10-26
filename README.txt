@@ -1,7 +1,33 @@
-UFI-Fix 1.0 - run the UFI Box software on Windows 11 24H2 / 25H2
-===============================================================
-Unofficial community fix. Not made by, or affiliated with, UFI / zegobit.
+UFI-Fix 2.1.0 - compatibility launcher and local AI API
+====================================================
+Unofficial community project, not affiliated with UFI / zegobit.
+LOCAL TEST CANDIDATE; full hardware acceptance pending.
 
+Close UFI-Fix and active bridge clients before upgrading with
+UFI-Fix-v2.1.0-Setup.exe. Setup reuses the previous installation and registration,
+backs up replaced app files and keeps vendor logs, settings and AI history.
+The installer includes the 2.0.1 inherited-ACL fix. No uninstall is needed.
+
+Keep UFI-Fix.exe, UFI-Bridge.exe, UFI-Control.exe and companion files together.
+Use AI connection settings in UFI-Fix to copy your MCP configuration. Existing
+C:\Program Files\UFI-Fix\UFI-Bridge.exe configurations keep working after upgrade.
+
+18 tools: logs, snapshots, separate edited drafts/history, diagnostics, UI read,
+app open/close, setting list/get/set, Identify request and fresh-output tracking.
+The bridge stays unprivileged. Its private helper requests native Windows UAC
+on the first control call of a session. No cloud account/API key is installed.
+
+eMMC GUI profile: VCC, VCCQ, clock, bus width. Selection is verified in the GUI,
+not electrically measured. Without a UFS programmer the UFS selectors are hidden;
+UFS voltage/frequency have no reviewed mapping. Identify returns device_not_ready
+when its real button is unavailable. Successful chip identification is not claimed
+by no-memory tests. See AI-BRIDGE.md and ufi-bridge-tools.json for exact contracts.
+
+No flash/erase/provisioning or unrestricted click/shell API. Original native
+patcher mitigation detection, memory error handling and instruction-cache issues
+remain unresolved. ACG compatibility is not fixed by this package.
+
+Version 1 background follows; historical v1 claims do not establish v2 acceptance.
 
 THE PROBLEM
 -----------

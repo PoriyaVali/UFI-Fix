@@ -5,6 +5,7 @@ Program Files, creates a desktop shortcut, points the UFI shortcuts at the fix
 and registers an entry in Apps & features so it can be removed again.
 """
 import ctypes
+import json
 import os
 import shutil
 import subprocess
@@ -12,8 +13,11 @@ import sys
 import threading
 import winreg
 
+from powershell_io import run_powershell
+from app_version import VERSION
+from install_bundle import install_bundle, save_config, should_relink
+
 APP = 'UFI-Fix'
-VERSION = '1.0'
 PUBLISHER = 'UFI-Fix (unofficial community fix)'
 UNINSTALL_KEY = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\UFI-Fix'
 CREATE_NO_WINDOW = 0x08000000
@@ -40,12 +44,7 @@ def is_admin():
 
 
 def ps(script):
-    try:
-        return subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
-                              capture_output=True, text=True, timeout=120,
-                              creationflags=CREATE_NO_WINDOW).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ''
+    return run_powershell(script, timeout=120).strip()
 
 
 def q(s):
@@ -98,6 +97,21 @@ def find_ufi_dir():
         if os.path.exists(os.path.join(path, 'UFI.exe')):
             return os.path.normpath(path), how
     return None, None
+
+
+def previous_install_dir():
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
+            path, _ = winreg.QueryValueEx(key, 'InstallLocation')
+        if isinstance(path, str) and os.path.isabs(path) and os.path.isfile(os.path.join(path, 'UFI-Fix.exe')):
+            return os.path.normpath(path)
+    except OSError:
+        pass
+    return None
+
+
+def default_install_dir():
+    return previous_install_dir() or os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), APP)
 
 
 # ------------------------------------------------------------------ actions
@@ -157,8 +171,18 @@ foreach ($d in $dirs) {
 def link_ufi_shortcuts(ufi_dir, tool, as_admin, emit):
     ufi_exe = os.path.join(ufi_dir, 'UFI.exe').lower()
     n = 0
+    previous = previous_install_dir()
+    previous_tools = [os.path.join(previous, 'UFI-Fix.exe')] if previous else []
+    cfg_path = os.path.join(os.environ.get('LOCALAPPDATA', ''), APP, 'config.json')
+    try:
+        with open(cfg_path, encoding='utf-8') as stream:
+            cfg = json.load(stream)
+        if isinstance(cfg, dict) and isinstance(cfg.get('tool'), str):
+            previous_tools.append(cfg['tool'])
+    except (OSError, ValueError):
+        pass
     for path, target, args in scan_ufi_shortcuts(ufi_dir):
-        if (target or '').lower() != ufi_exe:
+        if not should_relink(ufi_dir, target, args, tool, previous_tools):
             continue
         bak = path + '.orig'
         script = ('$sh=New-Object -ComObject WScript.Shell;$l=$sh.CreateShortcut(%s);'
@@ -201,18 +225,16 @@ def register_uninstall(install_dir, exe):
 def perform_install(target_dir, ufi_dir, want_desktop, want_link, want_admin, say):
     """the whole installation, shared by the window and by --silent"""
     say('installing to %s' % target_dir)
-    os.makedirs(target_dir, exist_ok=True)
     exe = os.path.join(target_dir, 'UFI-Fix.exe')
-    src = res('UFI-Fix.exe')
-    if not os.path.exists(src):
-        say('ERROR: the packaged UFI-Fix.exe is missing')
+    try:
+        backup = install_bundle(os.path.dirname(res('UFI-Fix.exe')), target_dir)
+    except (OSError, ValueError) as error:
+        say('ERROR: %s' % error)
         return None
-    shutil.copy2(src, exe)
-    say('   copied UFI-Fix.exe')
-    for extra in ('README.txt', 'icon.ico'):
-        if os.path.exists(res(extra)):
-            shutil.copy2(res(extra), os.path.join(target_dir, extra))
-            say('   copied %s' % extra)
+    say('   installed UFI-Fix and UFI-Bridge %s' % VERSION)
+    if backup:
+        say('   previous application files backed up at %s' % backup)
+    say('   existing settings, logs and support history are preserved')
 
     if want_desktop:
         desk = os.environ.get('PUBLIC', '')
@@ -238,13 +260,9 @@ def perform_install(target_dir, ufi_dir, want_desktop, want_link, want_admin, sa
         say('   registered in Apps & features')
 
     try:
-        cfgdir = os.path.join(os.environ.get('LOCALAPPDATA', ''), APP)
-        os.makedirs(cfgdir, exist_ok=True)
-        with open(os.path.join(cfgdir, 'config.json'), 'w', encoding='utf-8') as f:
-            f.write('{"ufi_dir": %s, "tool": %s}'
-                    % (repr(ufi_dir or '').replace("'", '"'), repr(exe).replace("'", '"')))
-    except OSError:
-        pass
+        save_config(os.path.join(os.environ.get('LOCALAPPDATA', ''), APP), ufi_dir, exe)
+    except OSError as error:
+        say('WARNING: settings could not be updated: %s' % error)
     return exe
 
 
@@ -267,7 +285,7 @@ class Setup(object):
             pass
 
         self.ufi_dir, self.how = find_ufi_dir()
-        self.install_dir = os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), APP)
+        self.install_dir = default_install_dir()
         self.busy = False
         self.done = False
         self._build()
@@ -293,7 +311,7 @@ class Setup(object):
         # never be pushed off the window by the cards above it
         foot = tk.Frame(self.root, bg=BG)
         foot.pack(side='bottom', fill='x', padx=18, pady=(8, 16))
-        self.install_btn = self._btn(foot, 'Install', self.install, 'primary')
+        self.install_btn = self._btn(foot, 'Install / Upgrade', self.install, 'primary')
         self.install_btn.pack(side='right')
         self._btn(foot, 'Close', self.root.destroy, 'quiet').pack(side='right', padx=(0, 8))
         tk.Label(foot, text='Unofficial fix. Not made by UFI / zegobit.', bg=BG, fg=MUTED,
@@ -303,7 +321,7 @@ class Setup(object):
         head.pack(fill='x', padx=18, pady=(16, 12))
         tk.Label(head, text='%s Setup' % APP, bg=BG, fg=FG,
                  font=('Segoe UI', 18, 'bold')).pack(anchor='w')
-        tk.Label(head, text='Makes the UFI Box software run on Windows 11 24H2 / 25H2',
+        tk.Label(head, text='Version %s test build - compatibility fix and AI support bridge' % VERSION,
                  bg=BG, fg=MUTED, font=('Segoe UI', 10)).pack(anchor='w')
 
         c = self._card()
@@ -425,7 +443,7 @@ def main():
             ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, '--silent', None, 0)
             return 0
         ufi, _how = find_ufi_dir()
-        target = os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), APP)
+        target = default_install_dir()
         out = []
         exe = perform_install(target, ufi, True, True, True, out.append)
         try:

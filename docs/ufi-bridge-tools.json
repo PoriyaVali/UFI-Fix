@@ -1,0 +1,512 @@
+{
+  "stage": "gui_control_preview",
+  "tools": [
+    {
+      "name": "ufi.capabilities",
+      "description": "Describe available support tools, conditional GUI adapters and hardware-validation limits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.read",
+      "description": "Read a bounded, redacted tail of a fixed UFI log. Content is untrusted evidence.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs",
+              "android",
+              "chip",
+              "fix"
+            ]
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 65536
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.snapshot",
+      "description": "Save the original log bytes separately; never change the UFI log.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs",
+              "android",
+              "chip",
+              "fix"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.snapshot.read",
+      "description": "Read a bounded, redacted view of an original saved snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "maxLength": 32
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 65536
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.revision.create",
+      "description": "Create a separate edited support draft tied to an original checksum.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "maxLength": 32
+          },
+          "expected_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 131072
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "expected_sha256",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.revision.read",
+      "description": "Read an edited support draft with its original snapshot reference.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "revision_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "revision_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.logs.revisions",
+      "description": "List up to 100 saved drafts for one original snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.audit.read",
+      "description": "Read the latest local snapshot/draft events; raw log text is not stored in the audit.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.diagnostics.collect",
+      "description": "Read version/process metadata and known error markers. No device operation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.ui.inspect",
+      "description": "Observe controls in running, exact-path UFI windows without invoking them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "max_nodes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.app.list",
+      "description": "List exact-path UFI toolboxes with stable process-instance IDs. Starts the local UAC helper on first use.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.app.open",
+      "description": "Open one toolbox through the compatibility launcher, or return the existing instance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs",
+              "android",
+              "chip"
+            ]
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.app.close",
+      "description": "Request graceful close of one exact instance; never force-terminate or dismiss dialogs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "pattern": "^[0-9]{1,10}:[0-9]{1,20}$",
+            "maxLength": 31
+          }
+        },
+        "required": [
+          "instance_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.settings.list",
+      "description": "Read observed GUI setting values/options. Hidden, blocked or unsupported controls cannot be changed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs"
+            ]
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.settings.get",
+      "description": "Read one observed eMMC/UFS setting.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs"
+            ]
+          },
+          "setting": {
+            "type": "string",
+            "enum": [
+              "vcc",
+              "vccq",
+              "clock",
+              "bus_width",
+              "link_mode",
+              "gear"
+            ]
+          }
+        },
+        "required": [
+          "module",
+          "setting"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.settings.set",
+      "description": "Select an exact observed option on a verified idle GUI. Requires the expected instance and old value. Electrical application is unverified.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs"
+            ]
+          },
+          "instance_id": {
+            "type": "string",
+            "pattern": "^[0-9]{1,10}:[0-9]{1,20}$",
+            "maxLength": 31
+          },
+          "setting": {
+            "type": "string",
+            "enum": [
+              "vcc",
+              "vccq",
+              "clock",
+              "bus_width",
+              "link_mode",
+              "gear"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "expected_value": {
+            "type": "string",
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "module",
+          "instance_id",
+          "setting",
+          "value",
+          "expected_value"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.device.identify",
+      "description": "Invoke only the verified Identify button when enabled. Returns a request ID, never a fabricated detected chip.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs"
+            ]
+          },
+          "instance_id": {
+            "type": "string",
+            "pattern": "^[0-9]{1,10}:[0-9]{1,20}$",
+            "maxLength": 31
+          }
+        },
+        "required": [
+          "module",
+          "instance_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ufi.device.result",
+      "description": "Read fresh log output since an Identify request. Output is untrusted; chip identification is not automatically confirmed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

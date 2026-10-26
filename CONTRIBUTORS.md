@@ -9,7 +9,7 @@
   `GetClientRect` prologue), designed the trampoline patch, and wrote the tool, the
   installer and the documentation.
 
-Commits are co-authored, so both of us are recorded on the work itself.
+The original version 1 commit retains its historical co-author credit.
 
 Found a bug, or a UFI feature that still crashes? Open an issue with the contents of
 `%LOCALAPPDATA%\UFI-Fix\UFI-Fix.log` — it almost certainly means another Windows function

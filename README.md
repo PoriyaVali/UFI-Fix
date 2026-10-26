@@ -1,5 +1,22 @@
 # UFI-Fix
 
+**Version 2.1.0 test candidate:** eighteen local MCP tools add application
+open/close, eMMC VCC/VCCQ/clock/bus selection, observed UFS link options and
+guarded Identify requests to the existing log/snapshot/draft API. Native Windows
+UAC elevation is scoped to a separate UFI-Control helper. One real eMMC Identify
+has been checked; broader hardware and electrical acceptance remain pending. UFS voltage/frequency remain
+unmapped because no UFS programmer is present. Full UFI control is incomplete.
+
+Setup upgrades the same installation, backs up app files, preserves logs/settings
+and retains the 2.0.1 installer ACL correction. Keep all three portable EXEs
+together. Native compatibility mitigation/cache/error-handling fixes remain
+pending. This is not a production-validated public release.
+See [API guide](docs/AI-BRIDGE.md) and [build notes](docs/V2-TEST-BUILD.md).
+The [validation record](docs/V2-VALIDATION.md) lists checked behavior and remaining
+limits. This publishes the v2 source preview; existing GitHub release downloads
+are separate from this commit. Build instructions are in the build notes.
+The v1 description and its historical test statements below retain their context.
+
 **Run the UFI Box software on Windows 11 24H2 / 25H2.**
 
 Unofficial community fix. Not made by, affiliated with, or endorsed by UFI / zegobit.
@@ -124,24 +141,23 @@ is remembered. Tested with UFI installed on a second drive.
 
 ## Build from source
 
+An experimental AI support API is available separately from the native fix:
+[UFI support bridge](docs/AI-BRIDGE.md). It reads logs from all four toolboxes
+and keeps edited support copies with original snapshots. Device control and
+settings mutation are not implemented in this preview.
+
 Requires Python 3.11+ on Windows.
 
-```bat
-pip install capstone qrcode pyinstaller pillow
-
-python src/make_icon.py
-python src/make_tron.py
-
-pyinstaller --onefile --noconsole --uac-admin --name UFI-Fix ^
-    --icon assets/icon.ico --add-data "assets/icon.ico;." --add-data "assets/tron.png;." ^
-    --hidden-import qrcode --exclude-module PIL --exclude-module numpy --exclude-module cv2 ^
-    src/UFI-Fix.py
-
-pyinstaller --onefile --noconsole --uac-admin --name UFI-Fix-Setup ^
-    --icon assets/icon.ico --add-data "assets/icon.ico;." --add-data "README.txt;." ^
-    --add-data "dist/UFI-Fix.exe;." --exclude-module PIL --exclude-module numpy ^
-    src/UFI-Fix-Setup.py
+```powershell
+py -m pip install capstone qrcode pyinstaller pillow
+py tools/build_v2.py
 ```
+
+Artifacts are placed in `dist/v2.0.1`. The script runs automated checks, embeds
+Windows version metadata in all three EXEs, builds the bridge without elevation,
+and produces the SHA-verified upgrade payload, installer, portable ZIP and hashes.
+It does not install the package or start UFI. Existing review artifacts in
+the parent `dist` directory are preserved.
 
 `Pillow` is only needed to redraw the icons; exclude it from the executables or the build
 grows from 14 MB to 34 MB.

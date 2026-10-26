@@ -44,9 +44,11 @@ import time
 import winreg
 
 from capstone import CS_ARCH_X86, CS_MODE_32, Cs
+from powershell_io import run_powershell
+from app_version import VERSION, BUILD_CHANNEL
+from install_bundle import connection_config, should_relink
 
 APP = 'UFI-Fix'
-VERSION = '1.0'
 DONATE_ADDRESS = 'TPWxvw8juAByLMjHsXpnEnQmq2N9UT5CUg'
 DONATE_COIN = 'TRX  (TRON network)'
 CONFIG_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), APP)
@@ -68,6 +70,10 @@ k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, c
 k32.WriteProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 k32.VirtualProtectEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wt.DWORD, ctypes.POINTER(wt.DWORD)]
 k32.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
+ntdll.NtSuspendProcess.argtypes = [wt.HANDLE]
+ntdll.NtSuspendProcess.restype = wt.LONG
+ntdll.NtResumeProcess.argtypes = [wt.HANDLE]
+ntdll.NtResumeProcess.restype = wt.LONG
 
 
 # ----------------------------------------------------------------- settings
@@ -220,7 +226,11 @@ def ufi_processes():
 class Target(object):
     def __init__(self, pid):
         self.pid = pid
-        self.h = k32.OpenProcess(0x438, False, pid)
+        # NtSuspendProcess/NtResumeProcess require PROCESS_SUSPEND_RESUME
+        # (0x0800). The old 0x438 handle silently failed to suspend anything.
+        self.h = k32.OpenProcess(0xC38, False, pid)
+        if not self.h:
+            raise OSError('Cannot open UFI for compatibility patching: %s' % ctypes.get_last_error())
         p = ctypes.c_void_p()
         ntdll.NtQueryInformationProcess(wt.HANDLE(self.h), 26, ctypes.byref(p), ctypes.sizeof(p), None)
         self.peb32 = p.value or 0
@@ -249,10 +259,14 @@ class Target(object):
         return c.value == 259
 
     def suspend(self):
-        ntdll.NtSuspendProcess(wt.HANDLE(self.h))
+        status = ntdll.NtSuspendProcess(wt.HANDLE(self.h))
+        if status < 0:
+            raise OSError('NtSuspendProcess failed: NTSTATUS 0x%08X; no patch dispatched' % (status & 0xffffffff))
 
     def resume(self):
-        ntdll.NtResumeProcess(wt.HANDLE(self.h))
+        status = ntdll.NtResumeProcess(wt.HANDLE(self.h))
+        if status < 0:
+            raise OSError('NtResumeProcess failed: NTSTATUS 0x%08X; inspect the UFI process' % (status & 0xffffffff))
 
     def modules(self):
         out = {}
@@ -421,21 +435,27 @@ def run_ufi(ufi_dir, arg, emit=None):
         say('no protected process appeared - UFI may already be running')
         return 0
 
-    t = Target(child)
+    try:
+        t = Target(child)
+    except OSError as error:
+        say('compatibility error: %s' % error)
+        return 1
     say('protected process %d found in %.1fs - applying the fix' % (child, time.time() - t0))
     done, total = set(), 0
     while t.alive():
-        todo = []
-        for name, base in t.modules().items():
-            if name in done or not name.endswith('.dll'):
-                continue
-            done.add(name)
-            p = os.path.join(SYSWOW64, name)
-            if os.path.exists(p):
-                todo.append((name, base, p))
-        if todo:
+        try:
+            # Suspend before the module snapshot as well as before writes.
+            # Do not resume after a failed suspend, or write into a live thread.
             t.suspend()
             try:
+                todo = []
+                for name, base in t.modules().items():
+                    if name in done or not name.endswith('.dll'):
+                        continue
+                    done.add(name)
+                    p = os.path.join(SYSWOW64, name)
+                    if os.path.exists(p):
+                        todo.append((name, base, p))
                 for name, base, p in todo:
                     report = []
                     n = patch_module(t, name, base, p, report)
@@ -446,8 +466,13 @@ def run_ufi(ufi_dir, arg, emit=None):
                         say('  fixed %d in %s' % (n, name))
             finally:
                 t.resume()
-        time.sleep(0.05 if time.time() - t0 < 10 else 1.0)
+        except OSError as error:
+            say('compatibility error: %s' % error)
+            k32.CloseHandle(wt.HANDLE(t.h))
+            return 1
+        time.sleep(0.005 if time.time() - t0 < 10 else 1.0)
     say('UFI closed - %d function(s) were fixed in %d module(s)' % (total, len(done)))
+    k32.CloseHandle(wt.HANDLE(t.h))
     return 0
 
 
@@ -478,12 +503,7 @@ foreach ($d in $dirs) {
 def scan_shortcuts(ufi_dir):
     """[(lnk path, target, arguments)] for every shortcut we can see"""
     script = PS_SCAN.replace('UFIDIR', ufi_dir.replace("'", "''") if ufi_dir else 'C:\\UFI')
-    try:
-        out = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
-                             capture_output=True, text=True, timeout=90,
-                             creationflags=CREATE_NO_WINDOW).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+    out = run_powershell(script, timeout=90, report=log)
     rows = []
     for line in out.splitlines():
         parts = line.strip().split('|')
@@ -512,7 +532,7 @@ def link_shortcuts(ufi_dir, tool, emit=print):
     ufi_exe = os.path.join(ufi_dir, 'UFI.exe')
     changed = 0
     for path, target, args in scan_shortcuts(ufi_dir):
-        if (target or '').lower() != ufi_exe.lower():
+        if not should_relink(ufi_dir, target, args, tool, [load_config().get('tool')]):
             continue
         script = (
             '$sh=New-Object -ComObject WScript.Shell;'
@@ -549,12 +569,7 @@ def _q(s):
 
 
 def _ps(script):
-    try:
-        return subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
-                              capture_output=True, text=True, timeout=60,
-                              creationflags=CREATE_NO_WINDOW).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ''
+    return run_powershell(script, timeout=60, report=log).strip()
 
 
 UNINSTALL_KEY = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\UFI-Fix'
@@ -598,7 +613,8 @@ def remove_everything():
         lines.append('removed the Apps & features entry')
     except OSError:
         pass
-    shutil.rmtree(CONFIG_DIR, ignore_errors=True)
+    # Keep user settings, source snapshots, edited drafts and audit history.
+    lines.append('kept your settings, logs and AI support history at %s' % CONFIG_DIR)
     here = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
     # a running exe cannot delete itself - let cmd do it a moment later
     if os.path.basename(here).lower() == 'ufi-fix':
@@ -655,11 +671,13 @@ class Gui(object):
 
         self.scale = make_dpi_aware()
         self.root = tk.Tk()
-        self.root.title('%s %s  -  UFI Box on Windows 11 24H2' % (APP, VERSION))
+        self.root.title('%s %s - test build' % (APP, VERSION))
         self.root.configure(bg=BG)
         self.root.tk.call('tk', 'scaling', self.scale * 96.0 / 72.0)
-        self.root.geometry('%dx%d' % (int(780 * self.scale), int(790 * self.scale)))
-        self.root.minsize(int(720 * self.scale), int(740 * self.scale))
+        width = min(int(780 * self.scale), self.root.winfo_screenwidth() - 40)
+        height = min(int(900 * self.scale), self.root.winfo_screenheight() - 80)
+        self.root.geometry('%dx%d' % (width, height))
+        self.root.minsize(min(int(720 * self.scale), width), min(int(620 * self.scale), height))
         try:
             self.root.iconbitmap(default=self._icon())
         except Exception:
@@ -715,10 +733,23 @@ class Gui(object):
                  justify='left').pack(fill='x')
         self._donate_card()
 
-        head = tk.Frame(self.root, bg=BG)
+        # Keep the added AI card accessible on smaller/high-DPI desktops.
+        scroll_area = tk.Frame(self.root, bg=BG)
+        scroll_area.pack(fill='both', expand=True)
+        canvas = tk.Canvas(scroll_area, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(scroll_area, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        content = tk.Frame(canvas, bg=BG)
+        content_window = canvas.create_window((0, 0), window=content, anchor='nw')
+        content.bind('<Configure>', lambda _event: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(content_window, width=event.width))
+
+        head = tk.Frame(content, bg=BG)
         head.pack(fill='x', padx=16, pady=(16, 12))
         tk.Label(head, text=APP, bg=BG, fg=FG, font=('Segoe UI', 20, 'bold')).pack(side='left')
-        tk.Label(head, text='  compatibility fix for Windows 11 24H2 / 25H2',
+        tk.Label(head, text='  v%s - compatibility fix + AI support' % VERSION,
                  bg=BG, fg=MUTED, font=('Segoe UI', 10)).pack(side='left', pady=(10, 0))
         self.dot = tk.Label(head, text='\u25cf', bg=BG, fg=MUTED, font=('Segoe UI', 16))
         self.dot.pack(side='right', pady=(4, 0))
@@ -726,7 +757,7 @@ class Gui(object):
         self.dot_text.pack(side='right', padx=(0, 8), pady=(6, 0))
 
         # --- where UFI is
-        c = self._card(self.root)
+        c = self._card(content)
         self._label(c, 'UFI installation folder', MUTED, 9).pack(fill='x')
         row = tk.Frame(c, bg=CARD)
         row.pack(fill='x', pady=(4, 0))
@@ -740,7 +771,7 @@ class Gui(object):
         self.how_label.pack(fill='x', pady=(6, 0))
 
         # --- toolboxes
-        c = self._card(self.root)
+        c = self._card(content)
         self._label(c, 'Start a programmer  (the fix is applied automatically)', MUTED, 9).pack(fill='x')
         grid = tk.Frame(c, bg=CARD)
         grid.pack(fill='x', pady=(8, 0))
@@ -751,7 +782,7 @@ class Gui(object):
         grid.columnconfigure(1, weight=1)
 
         # --- shortcuts
-        c = self._card(self.root)
+        c = self._card(content)
         self._label(c, 'Desktop and Start menu shortcuts', MUTED, 9).pack(fill='x')
         self.sc_label = self._label(c, '', FG, 10)
         self.sc_label.pack(fill='x', pady=(4, 8))
@@ -762,8 +793,15 @@ class Gui(object):
         self._button(row, 'Undo - restore originals', lambda: self.job(self.do_restore), 'danger').pack(side='left', padx=(0, 8))
         self._button(row, 'Open log', self.open_log, 'quiet').pack(side='right')
 
+        # --- AI support
+        c = self._card(content)
+        self._label(c, 'AI support', MUTED, 9).pack(fill='x')
+        self._label(c, 'Read logs and create edited copies while keeping the originals.', FG, 10).pack(fill='x', pady=(3, 2))
+        self._label(c, 'API: open/close apps, inspect settings and request Identify on supported controls.', MUTED, 9).pack(fill='x')
+        self._button(c, 'AI connection settings...', self.ai_connection).pack(anchor='w', pady=(7, 0))
+
         # --- activity
-        c = self._card(self.root)
+        c = self._card(content)
         self._label(c, 'Activity', MUTED, 9).pack(fill='x')
         box = tk.Frame(c, bg=CARD)
         box.pack(fill='both', expand=True, pady=(6, 0))
@@ -957,19 +995,37 @@ class Gui(object):
         if not self.ufi_dir:
             self.say('set the UFI folder first')
             return
-        home = tool_home(self.ufi_dir)
-        me = self._tool_path()
-        target = os.path.join(home, os.path.basename(me))
-        if me.lower().endswith('.exe') and os.path.abspath(me).lower() != target.lower():
-            try:
-                shutil.copy2(me, target)
-                self.say('installed a copy at %s' % target)
-            except OSError as e:
-                self.say('could not copy the tool: %s' % e)
-                target = me
+        # Keep the main EXE and its bridge companion together in the chosen
+        # installation/portable folder instead of creating an outdated copy.
+        target = self._tool_path()
         self.say('linking shortcuts ...')
         link_shortcuts(self.ufi_dir, target, self.say)
         self.say('done - a backup of every shortcut was kept as <name>.lnk.orig')
+
+    def ai_connection(self):
+        if not self.ufi_dir:
+            self.messagebox.showerror(APP, 'Select the folder containing UFI.exe first.')
+            return
+        bridge = os.path.join(os.path.dirname(self._tool_path()), 'UFI-Bridge.exe')
+        if not os.path.isfile(bridge):
+            self.messagebox.showerror(APP, 'UFI-Bridge.exe is missing. Install version 2 or extract the complete portable ZIP.')
+            return
+        config = json.dumps(connection_config(bridge, self.ufi_dir), indent=2)
+        window = self.tk.Toplevel(self.root)
+        window.title('UFI AI connection settings')
+        window.configure(bg=BG)
+        window.transient(self.root)
+        self.tk.Label(window, text='Add this configuration to an MCP-capable AI client.\n'
+                      'The client can read logs and save edited support copies.',
+                      bg=BG, fg=FG, justify='left', padx=14, pady=12).pack(anchor='w')
+        text = self.tk.Text(window, width=76, height=14, bg=CARD, fg=FG, font=('Consolas', 10))
+        text.insert('1.0', config)
+        text.configure(state='disabled')
+        text.pack(fill='both', expand=True, padx=14)
+        def copy():
+            window.clipboard_clear()
+            window.clipboard_append(config)
+        self._button(window, 'Copy configuration', copy).pack(anchor='e', padx=14, pady=12)
 
     def do_restore(self):
         if not self.messagebox.askyesno(APP, 'Put every UFI shortcut back to the original UFI.exe?'):
@@ -993,7 +1049,7 @@ class Gui(object):
             self.say('nothing logged yet')
 
     def run(self):
-        self.say('%s %s ready.' % (APP, VERSION))
+        self.say('%s %s (%s) ready.' % (APP, VERSION, BUILD_CHANNEL))
         if self.ufi_dir:
             self.say('UFI found at %s (%s)' % (self.ufi_dir, self.how))
         else:
