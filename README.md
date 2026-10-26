@@ -1,8 +1,22 @@
 # UFI-Fix
 
-**Version 2.1.0 test candidate:** eighteen local MCP tools add application
+**2.3.1 fixes Undo for copied toolbox shortcuts.** Shortcuts without an original
+backup now return directly to the selected UFI.exe, with target readback and an
+incomplete result on failures. Original backups are retained. The manager's own
+icon stays available; existing running processes are unchanged.
+
+**2.3.1 requires online stable-release verification.** A newer official release
+locks new launches, Identify, setting changes and support writes until updated.
+Use **Update now** in the launcher. This applies to builds containing the gate;
+previously distributed gate-free binaries cannot be remotely locked. Local
+Administrator tampering is outside the protection boundary. See
+[update policy](docs/UPDATE-POLICY.md) for the five-minute lease and validation.
+
+**Version 2.3.1 test candidate:** twenty local MCP tools add application
 open/close, eMMC VCC/VCCQ/clock/bus selection, observed UFS link options and
-guarded Identify requests to the existing log/snapshot/draft API. Native Windows
+guarded Identify requests to the existing log/snapshot/draft API. Detect adds
+read-only preflight, typed progress/identity/capacity/health and stable idle-UI
+completion checks. Embedded dialog panels block dispatch. Native Windows
 UAC elevation is scoped to a separate UFI-Control helper. One real eMMC Identify
 has been checked; broader hardware and electrical acceptance remain pending. UFS voltage/frequency remain
 unmapped because no UFS programmer is present. Full UFI control is incomplete.

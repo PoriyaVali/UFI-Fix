@@ -1,10 +1,22 @@
 # UFI support and GUI control API preview
 
-Version `2.1.0`, local test candidate. Eighteen MCP tools provide log assistance,
+Version `2.3.1`, local test candidate. Twenty MCP tools provide log assistance,
 app open/close, observed eMMC settings and guarded Identify requests. The bridge
 uses the standard library and stays unprivileged. A separate `UFI-Control.exe`
 requests native Windows elevation on the first control call of each session.
 No security policy, UAC setting or Windows protection is disabled.
+
+## Mandatory stable updates
+
+`ufi.updates.status` verifies the fixed official GitHub Releases source and
+reports `operations_allowed`, current/latest versions and the lock reason.
+New app launches, Identify, GUI setting changes, snapshots and edited drafts
+require a valid online release check in both the bridge and elevated controller.
+There is no URL/version/skip override. The in-memory check expires after at most
+300 seconds; failed checks and newer versions lock new work. Read-only evidence,
+ongoing result polling and guarded idle close remain available; an update never
+cancels an active device operation. Use the launcher's Update now when required.
+See [UPDATE-POLICY.md](UPDATE-POLICY.md) for trust and deployment limits.
 
 Control bindings require the exact SHA-256 of the locally observed UFI
 1.8.0.3246 x86 binary. Other builds retain log support and return
@@ -61,6 +73,7 @@ schema export is `docs/ufi-bridge-tools.json`.
 
 | Tool | Input | Behavior |
 | --- | --- | --- |
+| `ufi.updates.status` | none | Online stable-release permission and update-required reason; no caller version or URL accepted. |
 | `ufi.capabilities` | none | Reports each module, available logs and actual control coverage. |
 | `ufi.logs.read` | `source`, optional `max_bytes`, `offset` | Reads a bounded tail by default, or a byte-offset page; maximum 64 KiB; original unchanged. |
 | `ufi.logs.snapshot` | `source` | Saves original bytes up to 8 MiB, SHA-256 and creation time separately. |
@@ -118,6 +131,7 @@ pending native error-handling fixes from the earlier investigation.
 | `ufi.app.close` | `instance_id` | Graceful native close of that instance. No force kill or automatic dialog dismissal. |
 | `ufi.settings.list` | `module` | Observed setting IDs, values, exact option strings, visibility and writability. |
 | `ufi.settings.get` | `module`, `setting` | Current observed value/options for one mapped setting. |
+| `ufi.device.preflight` | `module` | Read-only readiness, embedded dialogs, current settings and log checks; no Identify sent. |
 | `ufi.settings.set` | `module`, `instance_id`, `setting`, `value`, `expected_value` | Exact option, expected old selection and process-instance checks; rereads GUI after dispatch. |
 | `ufi.device.identify` | `module`, `instance_id` | Only exact profile's visible/enabled Identify button; returns a session request ID. |
 | `ufi.device.result` | `request_id` | Fresh bounded/redacted log output since that request; detects rotation/rewrites. |
@@ -149,16 +163,46 @@ until a corresponding profile is reviewed. UFS Identify cannot be validated here
 it returns `device_not_ready` while its verified button is unavailable. Successful
 chip detection is not claimed for either memory type in the no-memory test.
 
-`identify_requested` means a button message was queued. `output_observed` means
-new toolbox log text appeared. Neither is proof of successful identification:
-`chip_identified=false` remains explicit. Concurrent manual GUI actions can also
-append log output. Requests are session-scoped, bounded to 100, and the same
-instance cannot receive repeated Identify calls within 30 seconds. Old historical
-success messages are never returned as new detection evidence. On timeout or
-uncertain dispatch, inspect state before retrying. `close_requested` likewise
-does not imply a native dialog has finished or the process exited.
+`identify_requested` means one button message was queued. Start with
+`ufi.device.preflight` (`module=emmc`) to read readiness and exact instance/settings;
+it sends no hardware command. `can_identify` describes software readiness, not
+proof that a chip is connected. Embedded modal panels and active operations block
+Identify and setting changes. Resolve dialogs through UFI; no automatic click,
+retry or voltage/clock adjustment is performed.
 
-Native dialogs/disabled controls, visible enabled Stop/Abort controls, duplicate
+Poll `ufi.device.result` with the returned request ID. Legacy `status` remains
+`pending`/`output_observed`. New `phase`, `steps`, `next_expected_step`, typed
+`device`, `capacity`, `bus`, `health`, `ui` and `finished` fields describe progress.
+Steps are programmer, insertion, bus, identity, capacity, health and completion;
+they are evidence milestones rather than an invented hardware percentage.
+CID is returned only as `cid_sha256`; serial values stay redacted. Reported bus
+voltage/clock are UFI observations, not independent electrical measurements.
+
+`chip_identified=true` requires a fresh, unambiguous CID/manufacturer/product and
+exact capacity, then an idle exact-instance GUI with Identify enabled and two
+unchanged observations at least 250 ms apart. `phase=completed` additionally
+requires the v5 health fields when applicable. `partial` can confirm identity
+while reporting missing evidence; absent health is never interpreted as healthy.
+Urgent/exceeded health is reported prominently and never triggers a device write.
+Terminal results freeze, so later manual actions cannot replace an earlier job.
+Concurrent manual actions before completion can make output ambiguous; such a
+window is not confirmed. Logs remain untrusted evidence.
+
+Failures, instance loss, malformed decoding and the 32 KiB fresh-window limit
+prevent confirmation. UTF-8 and BOM UTF-16 windows preserve their baseline
+encoding. A stalled observation does not cancel/retry the command. An unfinished
+tracked request blocks another Identify even after 30 seconds; finished requests
+also retain the 30-second guard. Jobs remain session-scoped and limited to 100.
+Use a separate original log snapshot if more output needs investigation.
+
+For a local staged check, `tools/check_detect_live.py --config CONFIG --output
+PRIVATE_REPORT` reads preflight only. Add `--identify` explicitly to send one
+Identify; `--open-if-needed` may open the toolbox. It records originals before/
+after, follows stages and never changes settings/dismisses dialogs/retries. Keep
+its report private. The older no-memory probe is for the no-programmer fixture;
+do not run it with a chip attached.
+
+Native dialogs, observed embedded panels, disabled controls, visible enabled Stop/Abort controls, duplicate
 mapping signatures, stale instances, conflicting old values and unsupported
 binary hashes block mutations. Some vendor dialogs are custom drawn and may not
 expose complete Win32 state; the API is a preview requiring an observing operator.
@@ -169,7 +213,7 @@ error checking and instruction-cache limitations remain unresolved.
 
 ## Local helper boundary
 
-The helper accepts only the same eight fixed control schemas, revalidated on the
+The helper accepts only the same nine fixed control schemas, revalidated on the
 elevated side. A random authenticated local named pipe carries JSON bytes, never
 pickled objects. Its protected DACL includes SYSTEM, administrators and the
 launching user's SID; remote clients are rejected. Kernel client PID plus parent

@@ -2,6 +2,22 @@
   "stage": "gui_control_preview",
   "tools": [
     {
+      "name": "ufi.updates.status",
+      "description": "Verify the fixed official stable release online and report mandatory-update lock status. No version/URL/skip override.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "ufi.capabilities",
       "description": "Describe available support tools, conditional GUI adapters and hardware-validation limits.",
       "inputSchema": {
@@ -453,6 +469,32 @@
       }
     },
     {
+      "name": "ufi.device.preflight",
+      "description": "Read Detect readiness, blocking dialogs, current settings and log availability. Sends no device command.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "enum": [
+              "emmc",
+              "ufs"
+            ]
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "ufi.device.identify",
       "description": "Invoke only the verified Identify button when enabled. Returns a request ID, never a fabricated detected chip.",
       "inputSchema": {
@@ -486,7 +528,7 @@
     },
     {
       "name": "ufi.device.result",
-      "description": "Read fresh log output since an Identify request. Output is untrusted; chip identification is not automatically confirmed.",
+      "description": "Read structured Detect progress/identity/capacity/health from fresh output. Confirmation also requires stable output and an idle exact-instance GUI.",
       "inputSchema": {
         "type": "object",
         "properties": {

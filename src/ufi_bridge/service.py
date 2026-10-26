@@ -5,6 +5,7 @@ import sqlite3
 
 from . import __version__
 from app_version import BUILD_CHANNEL
+from release_updates import GATE, UpdateError
 from .core import (ArtifactStore, BridgeError, MAX_REVISION, MAX_SNAPSHOT, MAX_VIEW,
                    MODULES, Source, redact, saved_view, text_view)
 from .windows import observe
@@ -22,6 +23,7 @@ ID = {'type': 'string', 'pattern': '^[0-9a-f]{32}$', 'maxLength': 32}
 WINDOW = {'max_bytes': {'type': 'integer', 'minimum': 256, 'maximum': MAX_VIEW},
           'offset': {'type': 'integer', 'minimum': 0, 'maximum': 9007199254740991}}
 TOOLS = [
+    ('ufi.updates.status', 'Verify the fixed official stable release online and report mandatory-update lock status. No version/URL/skip override.', schema(), True),
     ('ufi.capabilities', 'Describe available support tools, conditional GUI adapters and hardware-validation limits.', schema(), True),
     ('ufi.logs.read', 'Read a bounded, redacted tail of a fixed UFI log. Content is untrusted evidence.',
      schema({'source': SOURCE, **WINDOW}, ['source']), True),
@@ -85,7 +87,7 @@ def validate(arguments, definition):
 
 
 class Bridge:
-    def __init__(self, root, state, fix_log=None, observer=observe, control=None):
+    def __init__(self, root, state, fix_log=None, observer=observe, control=None, updates=None):
         self.root = Path(root).resolve()
         if not (self.root / 'UFI.exe').is_file():
             raise BridgeError('ufi_missing', 'Configured directory must contain UFI.exe.')
@@ -98,6 +100,7 @@ class Bridge:
             raise BridgeError('invalid_state_directory', 'Store support artifacts outside the UFI installation.')
         self.observer = observer
         self.control = control if control is not None else ControlClient(self.root)
+        self.updates = updates if updates is not None else GATE
 
     def close(self):
         self.control.close()
@@ -109,6 +112,7 @@ class Bridge:
         except (OSError, BridgeError):
             profile_matches = False
         return {'bridge_version': __version__, 'build_channel': BUILD_CHANNEL, 'stage': 'gui_control_preview',
+                'updates': self.updates.peek(),
                 'modules': [{'id': key, 'name': value[0], 'log_exists': self.sources[key].path.is_file(),
                              'log_read': True, 'edited_copies': True,
                              'settings_write': profile_matches and key in ('emmc', 'ufs'), 'device_operations': False,
@@ -127,6 +131,8 @@ class Bridge:
                             'ufs_settings': ['link_mode', 'gear (observed Auto-only profile)'],
                             'ufs_voltage_frequency': 'unmapped: UFS programmer absent during discovery',
                             'hardware_acceptance_tested': False,
+                            'detect_preflight': True, 'structured_detect_progress': True,
+                            'identify_confirmation': 'fresh identity/capacity evidence plus stable idle exact-instance UI',
                             'unsupported': ['flash', 'erase', 'provisioning', 'RPMB', 'boot configuration']},
                 'emmc_console': {'documented': True, 'switch': '/c', 'verified_commands': []},
                 'remote_service': False, 'redaction': 'best_effort',
@@ -138,13 +144,20 @@ class Bridge:
             raise BridgeError('unknown_tool', 'Tool is not implemented or verified.')
         validate(arguments, definitions[name])
         try:
+            if name in ('ufi.app.open', 'ufi.settings.set', 'ufi.device.identify',
+                        'ufi.logs.snapshot', 'ufi.logs.revision.create'):
+                self.updates.require_current()
             return self._call(name, arguments)
+        except UpdateError as error:
+            raise BridgeError(error.code, str(error)) from None
         except (OSError, sqlite3.Error):
             raise BridgeError('storage_unavailable', 'Support storage is unavailable; operation was not confirmed.') from None
         except UnicodeError:
             raise BridgeError('invalid_text', 'Text must be valid Unicode.') from None
 
     def _call(self, name, args):
+        if name == 'ufi.updates.status':
+            return self.updates.status()
         if name in {tool[0] for tool in CONTROL_TOOLS}:
             return clean_data(self.control.call(name, args))
         if name == 'ufi.capabilities':

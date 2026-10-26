@@ -99,7 +99,7 @@ def main():
               'executable_metadata': executables, 'payload_checksums': 'passed',
               'portable_matches_installer': True, 'packaged_mcp_synthetic_roundtrip': 'passed',
               'tool_count': len(tool_definitions()), 'live_installation': 'not performed',
-              'gui_ufi_hardware_acceptance': 'deferred by user', 'public_release': False}
+              'gui_ufi_hardware_acceptance': 'not performed by package check; see separate device evidence', 'public_release': False}
     (output / 'package-validation.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(report, indent=2))
 

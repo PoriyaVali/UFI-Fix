@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SRC = Path(__file__).resolve().parents[1] / 'src'
 sys.path.insert(0, str(SRC))
@@ -27,7 +28,8 @@ class BridgeFixture:
             (self.root / filename).write_bytes((key + '\r\nSerial: secret-123\r\n').encode())
         self.bridge = Bridge(self.root, self.directory / 'support',
                              fix_log=self.directory / 'missing-fix.log',
-                             observer=lambda *args, **kwargs: {'available': True, 'processes': [], 'ui': []})
+                             observer=lambda *args, **kwargs: {'available': True, 'processes': [], 'ui': []},
+                             updates=mock.Mock(peek=lambda: {'code': 'current', 'operations_allowed': True}))
 
     def call(self, name, **kwargs):
         return self.bridge.call(name, kwargs)

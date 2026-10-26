@@ -17,6 +17,7 @@ from ufi_bridge.control import (Controller, CLOCKS, VOLTAGES, WIDTHS, UFS_MODES,
                                 bindings, verified_vendor)
 from ufi_bridge.core import BridgeError
 from ufi_bridge.service import Bridge, tool_definitions
+from ufi_bridge.detection import ui_observation
 
 
 def combo(handle, options, left, parent=10):
@@ -42,6 +43,9 @@ class FakeNative:
     def children(self, hwnd):
         return copy.deepcopy(self.nodes)
 
+    def activity(self, instance):
+        return ui_observation(instance, self.children(instance['hwnd']))
+
     def launch(self, module):
         self.dispatched.append(('launch', module))
         self.apps = [dict(self.apps[0], module=module)]
@@ -61,14 +65,16 @@ class FakeNative:
         self.dispatched.append(('identify', node['hwnd']))
 
 
-class ControlTests(unittest.TestCase):
+class ControlFixture:
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / 'UFI.exe').write_bytes(b'not a real executable')
         self.native = FakeNative()
-        self.controller = Controller(self.root, self.native)
+        self.updates = mock.Mock()
+        self.updates.peek.return_value = {'code': 'current', 'operations_allowed': True}
+        self.controller = Controller(self.root, self.native, updates=self.updates)
         patcher = mock.patch('ufi_bridge.control.verified_vendor', return_value=self.root / 'UFI.exe')
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -84,6 +90,15 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(BridgeError) as caught:
             callback()
         self.assertEqual(caught.exception.code, code)
+
+    def start_identify(self):
+        self.native.nodes[-1]['enabled'] = True
+        self.log = self.root / 'eMMC_ToolBox.log'
+        self.log.write_bytes(b'Old historical successful Identify\n')
+        return self.call('ufi.device.identify', module='emmc', instance_id='123:456')['request_id']
+
+
+class ControlTests(ControlFixture, unittest.TestCase):
 
     def test_exact_binary_required_without_changing_a_file(self):
         self.error('unsupported_vendor_build', lambda: verified_vendor(self.root))
@@ -178,12 +193,6 @@ class ControlTests(unittest.TestCase):
             result = self.call('ufi.app.close', instance_id='123:456')
         self.assertEqual(result['status'], 'close_requested')
 
-    def start_identify(self):
-        self.native.nodes[-1]['enabled'] = True
-        self.log = self.root / 'eMMC_ToolBox.log'
-        self.log.write_bytes(b'Old historical successful Identify\n')
-        return self.call('ufi.device.identify', module='emmc', instance_id='123:456')['request_id']
-
     def test_identify_never_reuses_historical_success_and_prevents_rapid_repeats(self):
         request = self.start_identify()
         result = self.call('ufi.device.result', request_id=request)
@@ -207,13 +216,13 @@ class ControlTests(unittest.TestCase):
 
     def test_mcp_validates_again_and_marks_mutations(self):
         transport = mock.Mock()
-        bridge = Bridge(self.root, self.root.parent / 'unused-state', control=transport)
+        bridge = Bridge(self.root, self.root.parent / 'unused-state', control=transport, updates=self.updates)
         for args in (dict(module='emmc', setting='vcc', value='3.3 V'),
                      dict(module='emmc', instance_id='123:456', setting='erase', value='yes', expected_value='no')):
             self.error('invalid_arguments', lambda: bridge.call('ufi.settings.set', args))
         transport.call.assert_not_called()
         definitions = {t['name']: t for t in tool_definitions()}
-        self.assertEqual(len(definitions), 18)
+        self.assertEqual(len(definitions), 20)
         self.assertTrue(definitions['ufi.settings.set']['annotations']['destructiveHint'])
         self.assertFalse(definitions['ufi.app.close']['annotations']['readOnlyHint'])
 

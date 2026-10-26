@@ -110,6 +110,8 @@ def probe(configuration):
         assert tools == expected_tools, 'Runtime tools differ from installed schema.'
         assert len(tools) >= 10
         capabilities = client.tool('ufi.capabilities')
+        release_status = client.tool('ufi.updates.status')
+        assert release_status['operations_allowed'], 'Installed version cannot start new operations: ' + release_status['code']
         views = {}
         for source in [*sources, 'fix']:
             view = client.tool('ufi.logs.read', {'source': source, 'max_bytes': 8192})
@@ -156,6 +158,7 @@ def probe(configuration):
         report = {'status': 'passed', 'checked_at_utc': datetime.now(timezone.utc).isoformat(),
                   'configuration': configuration, 'executable_sha256': checksum(executable),
                   'server_info': initialized['serverInfo'], 'protocol_version': initialized['protocolVersion'],
+                  'update_status': release_status,
                   'tool_count': len(tools), 'tools_exercised': sorted(client.tools), 'log_sources': views,
                   'snapshot_pages': pages, 'snapshot_original_sha_verified': True,
                   'persian_draft_roundtrip': True, 'revision_history_and_audit': True,

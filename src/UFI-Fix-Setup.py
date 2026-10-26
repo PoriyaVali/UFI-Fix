@@ -5,6 +5,7 @@ Program Files, creates a desktop shortcut, points the UFI shortcuts at the fix
 and registers an entry in Apps & features so it can be removed again.
 """
 import ctypes
+import argparse
 import json
 import os
 import shutil
@@ -15,6 +16,8 @@ import winreg
 
 from powershell_io import run_powershell
 from app_version import VERSION
+from release_updates import GATE as UPDATE_GATE, UpdateError
+from update_runtime import wait_for_launcher, busy_processes
 from install_bundle import install_bundle, save_config, should_relink
 
 APP = 'UFI-Fix'
@@ -224,6 +227,13 @@ def register_uninstall(install_dir, exe):
 
 def perform_install(target_dir, ufi_dir, want_desktop, want_link, want_admin, say):
     """the whole installation, shared by the window and by --silent"""
+    try:
+        UPDATE_GATE.require_current()
+        if busy_processes():
+            raise UpdateError('update_apps_running', 'Close UFI-Fix, UFI-Bridge, UFI-Control and vendor UFI before installing. No application was terminated.')
+    except UpdateError as error:
+        say('ERROR: %s: %s' % (error.code, error))
+        return None
     say('installing to %s' % target_dir)
     exe = os.path.join(target_dir, 'UFI-Fix.exe')
     try:
@@ -433,6 +443,19 @@ class Setup(object):
 
 def main():
     args = [a.lower() for a in sys.argv[1:]]
+    handoff = argparse.ArgumentParser(add_help=False)
+    handoff.add_argument('--wait-for-pid', type=int)
+    handoff.add_argument('--wait-for-created', type=int)
+    handoff.add_argument('--reopen', action='store_true')
+    options, _ = handoff.parse_known_args(sys.argv[1:])
+    if (options.wait_for_pid is None) != (options.wait_for_created is None):
+        return 2
+    if options.wait_for_pid is not None:
+        try:
+            wait_for_launcher(options.wait_for_pid, options.wait_for_created)
+        except UpdateError as error:
+            ctypes.windll.user32.MessageBoxW(None, str(error), APP + ' update', 0x10)
+            return 2
     if args and args[0] in ('--uninstall', '/uninstall'):
         exe = os.path.join(os.path.dirname(sys.executable), 'UFI-Fix.exe')
         if os.path.exists(exe):
@@ -440,12 +463,18 @@ def main():
         return 0
     if '--silent' in args or '/silent' in args:
         if not is_admin():
-            ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, '--silent', None, 0)
+            ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, subprocess.list2cmdline(sys.argv[1:]), None, 0)
             return 0
         ufi, _how = find_ufi_dir()
         target = default_install_dir()
         out = []
         exe = perform_install(target, ufi, True, True, True, out.append)
+        if options.reopen:
+            # A failed update leaves the previous bundle in place. Reopen its
+            # locked update UI as well, so the user can inspect/retry the failure.
+            reopen = exe or os.path.join(target, 'UFI-Fix.exe')
+            if os.path.isfile(reopen):
+                subprocess.Popen([reopen], cwd=os.path.dirname(reopen), creationflags=CREATE_NO_WINDOW)
         try:
             with open(os.path.join(os.environ.get('TEMP', '.'), 'UFI-Fix-setup.log'), 'w',
                       encoding='utf-8') as f:

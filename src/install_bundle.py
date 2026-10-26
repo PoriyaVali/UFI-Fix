@@ -12,7 +12,7 @@ import uuid
 
 from app_version import VERSION
 
-BUNDLE_FILES = ('UFI-Fix.exe', 'UFI-Bridge.exe', 'UFI-Control.exe', 'README.txt', 'AI-BRIDGE.md',
+BUNDLE_FILES = ('UFI-Fix.exe', 'UFI-Bridge.exe', 'UFI-Control.exe', 'README.txt', 'AI-BRIDGE.md', 'UPDATE-POLICY.md',
                 'ufi-bridge-tools.json', 'icon.ico', 'LICENSE', 'CONTRIBUTORS.md')
 MANIFEST = 'package-manifest.json'
 
@@ -136,8 +136,16 @@ def save_config(config_directory, ufi_directory, executable):
         temporary.unlink(missing_ok=True)
 
 
+def normalize_shortcut_path(value):
+    value = ntpath.normpath(str(value or ''))
+    if os.name == 'nt' and ntpath.isabs(value) and not value.startswith('\\\\'):
+        # Shell links expose long paths even when TEMP/config uses an 8.3 alias.
+        value = os.path.realpath(value)
+    return ntpath.normcase(value)
+
+
 def should_relink(ufi_directory, target, arguments, tool, previous_tools=()):
-    normalize = lambda value: ntpath.normcase(ntpath.normpath(str(value)))
+    normalize = normalize_shortcut_path
     if normalize(target or '') == normalize(ntpath.join(ufi_directory, 'UFI.exe')):
         return True
     known = {normalize(tool), normalize(ntpath.join(ufi_directory, 'fix', 'UFI-Fix.exe'))}

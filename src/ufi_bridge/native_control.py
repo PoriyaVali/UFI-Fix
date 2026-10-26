@@ -9,6 +9,7 @@ import time
 
 from .control import CLOCKS, UFS_MODES, verified_vendor
 from .core import BridgeError, MODULES
+from .detection import ui_observation
 
 
 class Native:
@@ -59,7 +60,7 @@ class Native:
             raise BridgeError('ui_timeout', 'UFI did not confirm a window message; the operation result is unknown.')
         return -1 if value.value in (0xffffffff, 0xffffffffffffffff) else value.value
 
-    def children(self, hwnd):
+    def children(self, hwnd, include_options=True):
         self.read_deadline = time.monotonic() + 8
         handles = []
         @self.callback
@@ -79,6 +80,9 @@ class Native:
                     'enabled': bool(self.u.IsWindowEnabled(handle)),
                     'rect': [rect.left, rect.top, rect.right, rect.bottom]}
             nodes.append(node)
+        if not include_options:
+            self.read_deadline = None
+            return nodes
         # The reviewed selectors are sibling rows of two (UFS) or four (eMMC)
         # combo boxes. Restrict expensive cross-process string reads to those
         # structures, then still require exact option signatures in bindings().
@@ -161,13 +165,16 @@ class Native:
             if identity is None:
                 continue
             title = self.text(handle)
+            bounds = W.RECT()
+            self.u.GetWindowRect(handle, C.byref(bounds))
+            rect = [bounds.left, bounds.top, bounds.right, bounds.bottom]
             if self.text(handle, True) == '#32770':
                 # Report vendor-owned native error dialogs as failures, never
                 # as an opened toolbox. Do not automatically acknowledge them.
                 texts = [n['name'] for n in self.children(handle) if n['name']]
                 instances.append({'instance_id': identity, 'pid': pid.value, 'hwnd': handle,
                                   'module': None, 'title': title, 'enabled': False,
-                                  'dialogs': texts, 'status': 'native_error_dialog'})
+                                  'rect': rect, 'dialogs': texts, 'status': 'native_error_dialog'})
                 continue
             module = next((key for key, value in MODULES.items() if value[0].casefold() in title.casefold()), self.module_cache.get(identity))
             if module is None:
@@ -184,11 +191,27 @@ class Native:
                 self.module_cache = {identity: module}
             instances.append({'instance_id': identity, 'pid': pid.value, 'hwnd': handle,
                               'module': module, 'title': title,
+                              'rect': rect,
                               'enabled': bool(self.u.IsWindowEnabled(handle)),
                               'dialogs': [self.text(h) or kind for h, p, kind in visible
                                           if p == pid.value and h != handle and kind != 'TApplication'],
                               'status': 'window_observed' if title.strip() else 'ui_unavailable'})
         return instances
+
+    def activity(self, instance):
+        self.guard(instance, check_enabled=False)
+        bounds = W.RECT()
+        self.u.GetWindowRect(instance['hwnd'], C.byref(bounds))
+        current = dict(instance, enabled=bool(self.u.IsWindowEnabled(instance['hwnd'])),
+                       rect=[bounds.left, bounds.top, bounds.right, bounds.bottom])
+        return ui_observation(current, self.children(instance['hwnd'], include_options=False))
+
+    def ensure_idle(self, instance):
+        state = self.activity(instance)
+        if state['blocked']:
+            raise BridgeError('ui_blocked', 'UFI has a visible blocking panel; no action was sent.')
+        if state['busy']:
+            raise BridgeError('device_busy', 'UFI is already running an operation; no action was sent.')
 
     def launch(self, module):
         verified_vendor(self.root)
@@ -213,12 +236,12 @@ class Native:
             raise BridgeError('launcher_root_mismatch', 'Choose this --ufi-dir in UFI-Fix first; its saved directory must match exactly.')
         subprocess.Popen(command, cwd=launcher.parent, creationflags=subprocess.CREATE_NO_WINDOW)
 
-    def guard(self, instance, node=None):
+    def guard(self, instance, node=None, check_enabled=True):
         pid = W.DWORD()
         self.u.GetWindowThreadProcessId(instance['hwnd'], C.byref(pid))
         if self.process(pid.value) != instance['instance_id'] or self.text(instance['hwnd'], True) != 'UFI::WinUIClass':
             raise BridgeError('stale_instance', 'The target window/process changed before dispatch.')
-        if not self.u.IsWindowEnabled(instance['hwnd']):
+        if check_enabled and not self.u.IsWindowEnabled(instance['hwnd']):
             raise BridgeError('ui_blocked', 'UFI main window became disabled before dispatch.')
         if node:
             self.u.GetWindowThreadProcessId(node['hwnd'], C.byref(pid))
@@ -261,6 +284,7 @@ class Native:
 
     def select(self, node, index, instance):
         self.guard(instance, node)
+        self.ensure_idle(instance)
         if self.message(node['hwnd'], 0x147) != node['selection']:
             raise BridgeError('setting_conflict', 'GUI selection changed immediately before dispatch.')
         if self.message(node['hwnd'], 0x14e, index) != index:
@@ -273,5 +297,6 @@ class Native:
         # Native BM_CLICK on this specific verified TButton only. No arbitrary
         # command ID, HWND, text or screen coordinate can come from the client.
         self.guard(instance, node)
+        self.ensure_idle(instance)
         if not self.u.PostMessageW(node['hwnd'], 0xf5, 0, 0):
             raise BridgeError('identify_dispatch_failed', 'The Identify button message could not be queued.')

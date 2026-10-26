@@ -26,7 +26,7 @@ def probe(configuration):
                                                'clientInfo': {'name': 'ufi-no-memory-check', 'version': '1'}})
         client.notify('notifications/initialized')
         definitions = client.rpc('tools/list')['tools']
-        assert len(definitions) == 18
+        assert len(definitions) == 20
         initial = tool('ufi.app.list')['apps']
         initial_ids = {a['instance_id'] for a in initial}
         for module in ('emmc', 'ufs', 'android', 'chip'):
@@ -50,6 +50,8 @@ def probe(configuration):
             iid = instance['instance_id']
             if module in ('emmc', 'ufs'):
                 listing = tool('ufi.settings.list', {'module': module})
+                readiness = tool('ufi.device.preflight', {'module': module})
+                assert not readiness['can_identify'] and not readiness['device_command_sent']
                 setting = 'clock' if module == 'emmc' else 'link_mode'
                 current = tool('ufi.settings.get', {'module': module, 'setting': setting})
                 if module == 'emmc':

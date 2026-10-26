@@ -1,10 +1,21 @@
-UFI-Fix 2.1.0 - compatibility launcher and local AI API
+UFI-Fix 2.3.1 - compatibility launcher and local AI API
 ====================================================
 Unofficial community project, not affiliated with UFI / zegobit.
 LOCAL TEST CANDIDATE; full hardware acceptance pending.
 
+Undo also restores copied toolbox shortcuts without backups. Their next launch
+goes directly to UFI.exe. The UFI-Fix manager icon remains available. A running
+UFI process is unchanged; close it normally before checking a fresh shortcut.
+Undo reports verification failures instead of claiming everything was restored.
+
+Online stable-release verification is required before new operations. If a newer
+official release exists, use Update now in UFI-Fix; there is no continue-old or
+offline override. Valid online checks last at most five minutes. Existing job
+observation and safe cleanup remain available. Updates preserve logs/history.
+Older distributed builds without this gate cannot be remotely disabled.
+
 Close UFI-Fix and active bridge clients before upgrading with
-UFI-Fix-v2.1.0-Setup.exe. Setup reuses the previous installation and registration,
+UFI-Fix-v2.3.1-Setup.exe. Setup reuses the previous installation and registration,
 backs up replaced app files and keeps vendor logs, settings and AI history.
 The installer includes the 2.0.1 inherited-ACL fix. No uninstall is needed.
 
@@ -12,8 +23,10 @@ Keep UFI-Fix.exe, UFI-Bridge.exe, UFI-Control.exe and companion files together.
 Use AI connection settings in UFI-Fix to copy your MCP configuration. Existing
 C:\Program Files\UFI-Fix\UFI-Bridge.exe configurations keep working after upgrade.
 
-18 tools: logs, snapshots, separate edited drafts/history, diagnostics, UI read,
-app open/close, setting list/get/set, Identify request and fresh-output tracking.
+20 tools: logs, snapshots, separate edited drafts/history, diagnostics, UI read,
+app open/close, settings, read-only Detect preflight and structured result tracking.
+Detect confirms fresh identity/capacity only after stable output and idle GUI.
+Embedded error/settings panels block changes; no automatic retry/dismissal.
 The bridge stays unprivileged. Its private helper requests native Windows UAC
 on the first control call of a session. No cloud account/API key is installed.
 

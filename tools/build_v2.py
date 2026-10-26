@@ -77,6 +77,7 @@ def main():
     inputs = {'UFI-Fix.exe': BIN / 'UFI-Fix.exe', 'UFI-Bridge.exe': BIN / 'UFI-Bridge.exe',
               'UFI-Control.exe': BIN / 'UFI-Control.exe',
               'README.txt': ROOT / 'README.txt', 'AI-BRIDGE.md': ROOT / 'docs/AI-BRIDGE.md',
+              'UPDATE-POLICY.md': ROOT / 'docs/UPDATE-POLICY.md',
               'ufi-bridge-tools.json': ROOT / 'docs/ufi-bridge-tools.json',
               'icon.ico': ROOT / 'assets/icon.ico', 'LICENSE': ROOT / 'LICENSE',
               'CONTRIBUTORS.md': ROOT / 'CONTRIBUTORS.md'}

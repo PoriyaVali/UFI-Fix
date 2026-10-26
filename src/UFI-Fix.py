@@ -34,6 +34,7 @@ USAGE
 import ctypes
 import ctypes.wintypes as wt
 import json
+import re
 import os
 import shutil
 import struct
@@ -46,7 +47,8 @@ import winreg
 from capstone import CS_ARCH_X86, CS_MODE_32, Cs
 from powershell_io import run_powershell
 from app_version import VERSION, BUILD_CHANNEL
-from install_bundle import connection_config, should_relink
+from release_updates import GATE as UPDATE_GATE, UpdateError, RELEASES_URL, download_installer
+from install_bundle import connection_config, should_relink, normalize_shortcut_path
 
 APP = 'UFI-Fix'
 DONATE_ADDRESS = 'TPWxvw8juAByLMjHsXpnEnQmq2N9UT5CUg'
@@ -418,6 +420,12 @@ def run_ufi(ufi_dir, arg, emit=None):
     if not os.path.exists(exe):
         say('UFI.exe not found in %s' % ufi_dir)
         return 1
+    try:
+        UPDATE_GATE.require_current()
+    except UpdateError as error:
+        say('%s: %s' % (error.code, error))
+        say('Open UFI-Fix to check/install the required update: ' + RELEASES_URL)
+        return 3
     say('starting %s %s' % (exe, arg))
     try:
         proc = subprocess.Popen([exe, arg], cwd=ufi_dir)
@@ -497,38 +505,47 @@ foreach ($d in $dirs) {
     } catch {}
   }
 }
+'__UFI_SHORTCUT_SCAN_COMPLETE__'
 '''
 
 
-def scan_shortcuts(ufi_dir):
+def scan_shortcuts(ufi_dir, strict=False):
     """[(lnk path, target, arguments)] for every shortcut we can see"""
     script = PS_SCAN.replace('UFIDIR', ufi_dir.replace("'", "''") if ufi_dir else 'C:\\UFI')
     out = run_powershell(script, timeout=90, report=log)
+    if strict and '__UFI_SHORTCUT_SCAN_COMPLETE__' not in out.splitlines():
+        raise RuntimeError('Shortcut scan could not be verified; Undo is incomplete.')
     rows = []
+    seen = set()
     for line in out.splitlines():
         parts = line.strip().split('|')
         if len(parts) >= 3 and parts[0].lower().endswith('.lnk'):
-            rows.append((parts[0], parts[1], '|'.join(parts[2:])))
+            key = normalize_shortcut_path(parts[0])
+            if key not in seen:
+                seen.add(key)
+                rows.append((parts[0], parts[1], '|'.join(parts[2:])))
     return rows
 
 
 def ufi_shortcuts(ufi_dir, tool=None):
     """(linked, unlinked) shortcut lists for this UFI installation"""
-    ufi_exe = os.path.join(ufi_dir, 'UFI.exe').lower()
+    ufi_exe = normalize_shortcut_path(os.path.join(ufi_dir, 'UFI.exe'))
     linked, unlinked = [], []
     toolbox_args = {a for a, _n in TOOLBOXES}
+    tool = tool or load_config().get('tool') or (sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
     for path, target, args in scan_shortcuts(ufi_dir):
-        t = (target or '').lower()
+        t = normalize_shortcut_path(target)
         if t == ufi_exe:
             unlinked.append((path, args))
-        elif (os.path.basename(t).startswith(APP.lower())
-              and (args or '').strip().lower() in toolbox_args):
+        elif ((args or '').strip().lower() in toolbox_args
+              and should_relink(ufi_dir, target, args, tool, [load_config().get('tool')])):
             # our own UFI-Fix shortcut has no toolbox argument - don't count it
             linked.append((path, args))
     return linked, unlinked
 
 
 def link_shortcuts(ufi_dir, tool, emit=print):
+    UPDATE_GATE.require_current()
     ufi_exe = os.path.join(ufi_dir, 'UFI.exe')
     changed = 0
     for path, target, args in scan_shortcuts(ufi_dir):
@@ -549,19 +566,105 @@ def link_shortcuts(ufi_dir, tool, emit=print):
 
 
 def restore_shortcuts(ufi_dir, tool, emit=print):
-    restored = 0
-    for path, _target, _args in scan_shortcuts(ufi_dir):
-        bak = path + '.orig'
-        if os.path.exists(bak):
+    """Restore owned toolbox links, including copied links without .orig files.
+
+    Manager shortcuts and unrelated executables are excluded. A backup must
+    identify the same vendor and toolbox; all backups are retained. Success
+    requires both per-link readback and a second complete shortcut scan.
+    """
+    report = dict(restored=0, repaired=0, already_original=0, failed=0, remaining=None, success=False)
+    ufi_dir = os.path.realpath(os.path.abspath(ufi_dir))
+    vendor = os.path.join(ufi_dir, 'UFI.exe')
+    toolbox_args = {arg for arg, _ in TOOLBOXES}
+    previous = load_config().get('tool')
+    tool = tool or previous or (sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
+    same = lambda left, right: normalize_shortcut_path(left) == normalize_shortcut_path(right)
+    owned = lambda target, args: ((args or '').strip().lower() in toolbox_args
+                                 and not same(target, vendor)
+                                 and should_relink(ufi_dir, target, args, tool, [previous]))
+    try:
+        if not os.path.isfile(vendor):
+            raise RuntimeError('Original UFI.exe was not found; no shortcut was changed.')
+        rows = scan_shortcuts(ufi_dir, strict=True)
+        for path, target, args in rows:
+            if same(target, vendor):
+                report['already_original'] += 1
+                continue
+            if not owned(target, args):
+                continue
+            # WScript cannot load a .lnk.orig directly. Inspect a temporary .lnk
+            # copy, then restore only an original for this exact toolbox.
+            script = r'''# UFI_RESTORE_LINK_V1
+$ErrorActionPreference='Stop'
+$ufiPath=LINK_PATH
+$ufiVendor=VENDOR_PATH
+$ufiExpectedTarget=EXPECTED_TARGET
+$ufiArgs=EXPECTED_ARGS
+$ufiWork=WORK_DIRECTORY
+$ufiTemporary=$null
+$ufiResult=@{success=$false;method=$null;warning=$null}
+try {
+ $ufiShell=New-Object -ComObject WScript.Shell
+ $ufiLink=$ufiShell.CreateShortcut($ufiPath)
+ if($ufiLink.TargetPath -ine $ufiExpectedTarget -or $ufiLink.Arguments -cne $ufiArgs){throw 'Shortcut changed during Undo; retry.'}
+ $ufiBackup=$ufiPath+'.orig'
+ $ufiValid=$false
+ if(Test-Path -LiteralPath $ufiBackup -PathType Leaf){
+  try {
+   $ufiTemporary=Join-Path ([IO.Path]::GetTempPath()) ('UFI-restore-'+[Guid]::NewGuid().ToString('N')+'.lnk')
+   Copy-Item -LiteralPath $ufiBackup -Destination $ufiTemporary
+   $ufiOriginal=$ufiShell.CreateShortcut($ufiTemporary)
+   $ufiValid=($ufiOriginal.TargetPath -ieq $ufiVendor -and $ufiOriginal.Arguments.Trim().ToLowerInvariant() -eq $ufiArgs.Trim().ToLowerInvariant())
+   if(-not $ufiValid){$ufiResult.warning='Backup is not the original for this toolbox; it was kept.'}
+  } catch {$ufiResult.warning='Backup could not be validated; it was kept.'}
+ }
+ if($ufiValid){
+  Copy-Item -LiteralPath $ufiBackup -Destination $ufiPath -Force
+  $ufiResult.method='restored'
+ } else {
+  $ufiLink.TargetPath=$ufiVendor
+  $ufiLink.Arguments=$ufiArgs
+  $ufiLink.WorkingDirectory=$ufiWork
+  $ufiLink.IconLocation=$ufiVendor+',0'
+  $ufiLink.Save()
+  $ufiResult.method='repaired'
+ }
+ $ufiCheck=$ufiShell.CreateShortcut($ufiPath)
+ if($ufiCheck.TargetPath -ine $ufiVendor -or $ufiCheck.Arguments.Trim().ToLowerInvariant() -ne $ufiArgs.Trim().ToLowerInvariant()){
+  throw 'Shortcut readback did not match the original UFI and toolbox.'
+ }
+ $ufiResult.success=$true
+} catch {$ufiResult.error=$_.Exception.Message}
+finally {if($ufiTemporary -and (Test-Path -LiteralPath $ufiTemporary)){Remove-Item -LiteralPath $ufiTemporary -Force}}
+$ufiResult | ConvertTo-Json -Compress
+'''
+            # Substitute whole placeholder tokens, never shell-interpolated data.
+            values = {key: _q(value) for key, value in (
+                ('LINK_PATH', path), ('VENDOR_PATH', vendor), ('EXPECTED_TARGET', target),
+                ('EXPECTED_ARGS', args or ''), ('WORK_DIRECTORY', ufi_dir))}
+            script = re.sub(r'\b(?:LINK_PATH|VENDOR_PATH|EXPECTED_TARGET|EXPECTED_ARGS|WORK_DIRECTORY)\b',
+                            lambda match: values[match[0]], script)
             try:
-                shutil.copy2(bak, path)
-                os.remove(bak)
-                restored += 1
-                emit('  restored: %s' % os.path.basename(path))
-            except OSError as e:
-                emit('  could not restore %s: %s' % (path, e))
-    emit('%d shortcut(s) put back to the original UFI.exe.' % restored)
-    return restored
+                result = json.loads(_ps(script))
+                if not isinstance(result, dict) or not result.get('success') or result.get('method') not in ('restored', 'repaired'):
+                    raise RuntimeError(result.get('error', 'Shortcut restoration was not confirmed.') if isinstance(result, dict) else 'Invalid restoration response.')
+                report[result['method']] += 1
+                emit('  %s: %s' % (result['method'], os.path.basename(path)))
+                if result.get('warning'):
+                    emit('  ' + result['warning'])
+            except (OSError, ValueError, RuntimeError) as error:
+                report['failed'] += 1
+                emit('  could not restore %s: %s' % (path, error))
+        remaining = scan_shortcuts(ufi_dir, strict=True)
+        report['remaining'] = sum(owned(target, args) for _, target, args in remaining)
+        report['success'] = report['failed'] == 0 and report['remaining'] == 0
+    except (OSError, RuntimeError) as error:
+        report['failed'] += 1
+        emit('Undo verification failed: %s' % error)
+    emit('Undo %s: %d restored, %d repaired, %d already original, %d failed, %s still linked.' % (
+        'verified' if report['success'] else 'incomplete', report['restored'], report['repaired'],
+        report['already_original'], report['failed'], report['remaining'] if report['remaining'] is not None else 'unknown'))
+    return report
 
 
 def _q(s):
@@ -595,7 +698,10 @@ def remove_everything():
     lines = []
     d, _ = find_ufi_dir()
     if d:
-        restore_shortcuts(d, '', lines.append)
+        result = restore_shortcuts(d, '', lines.append)
+        if not result['success']:
+            ctypes.windll.user32.MessageBoxW(None, 'Shortcut restoration is incomplete. UFI-Fix was kept.\r\n\r\n' + '\r\n'.join(lines[-12:]), APP, 0x10)
+            return 1
     for folder in (os.path.join(os.environ.get('PUBLIC', ''), 'Desktop'),
                    os.path.join(os.path.expanduser('~'), 'Desktop'),
                    os.path.join(os.environ.get('ProgramData', ''),
@@ -686,6 +792,10 @@ class Gui(object):
         self.ufi_dir, self.how = find_ufi_dir()
         self.tool = self._tool_path()
         self.busy = False
+        self.updating = False
+        self.checking_update = False
+        self.update_state = UPDATE_GATE.peek()
+        self.launch_buttons = []
 
         self._build()
         self.refresh()
@@ -756,6 +866,17 @@ class Gui(object):
         self.dot_text = tk.Label(head, text='', bg=BG, fg=MUTED, font=('Segoe UI', 10))
         self.dot_text.pack(side='right', padx=(0, 8), pady=(6, 0))
 
+        c = self._card(content)
+        self._label(c, 'Required updates', MUTED, 9).pack(fill='x')
+        self.update_label = self._label(c, 'Checking the official release before enabling operations...', WARN, 9)
+        self.update_label.configure(wraplength=int(620 * self.scale), justify='left')
+        self.update_label.pack(fill='x', pady=(4, 6))
+        row = tk.Frame(c, bg=CARD)
+        row.pack(fill='x')
+        self.update_button = self._button(row, 'Update now', self.update_now, 'primary')
+        self.update_button.pack(side='left')
+        self._button(row, 'Retry check', lambda: self.check_updates(force=True)).pack(side='left', padx=(8, 0))
+
         # --- where UFI is
         c = self._card(content)
         self._label(c, 'UFI installation folder', MUTED, 9).pack(fill='x')
@@ -777,6 +898,7 @@ class Gui(object):
         grid.pack(fill='x', pady=(8, 0))
         for i, (arg, name) in enumerate(TOOLBOXES):
             b = self._button(grid, name, lambda a=arg: self.launch(a), 'primary')
+            self.launch_buttons.append(b)
             b.grid(row=i // 2, column=i % 2, sticky='ew', padx=(0, 8) if i % 2 == 0 else (0, 0), pady=4)
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
@@ -953,7 +1075,67 @@ class Gui(object):
         self.say('UFI folder set to %s' % d)
         self.refresh()
 
+    def _apply_update_lock(self):
+        allowed = self.update_state.get('operations_allowed', False) and not self.busy and not self.updating
+        for button in self.launch_buttons + [self.link_btn]:
+            button.configure(state='normal' if allowed else 'disabled')
+        self.update_button.configure(state='normal' if self.update_state.get('update_available')
+                                     and not self.busy and not self.updating else 'disabled')
+
+    def _show_update_state(self, state):
+        self.update_state = state
+        self.checking_update = False
+        text = state['message']
+        if state.get('latest_version'):
+            text += ' Current: %s; latest stable: %s.' % (VERSION, state['latest_version'])
+        self.update_label.configure(text=text, fg=OK if state['operations_allowed'] else WARN)
+        self._apply_update_lock()
+
+    def check_updates(self, force=False):
+        if self.checking_update:
+            return
+        self.checking_update = True
+        def worker():
+            state = UPDATE_GATE.status(force=force)
+            try:
+                self.root.after(0, lambda: self._show_update_state(state))
+            except RuntimeError:
+                pass  # Window was closed during a network request.
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_tick(self):
+        self.check_updates()
+        self.root.after(10000, self.update_tick)
+
+    def update_now(self):
+        if self.updating or self.busy:
+            return
+        self.updating = True
+        self._apply_update_lock()
+        def worker():
+            try:
+                from update_runtime import busy_processes, launch_installer
+                if busy_processes():
+                    raise UpdateError('update_apps_running', 'Close UFI and other UFI-Fix/Bridge/Control instances, then retry.')
+                self.say('Downloading the required update from the official release...')
+                last_percent = [-1]
+                def progress(done, total):
+                    percent = done * 100 // total
+                    if percent != last_percent[0]:
+                        last_percent[0] = percent
+                        self.root.after(0, lambda p=percent: self.update_label.configure(text='Downloading update: %d%%' % p))
+                downloaded = download_installer(progress=progress)
+                self.say('Verified update %s; starting Windows installer.' % downloaded['version'])
+                launch_installer(downloaded)
+                self.root.after(0, self.root.destroy)
+            except Exception as error:
+                self.say('Update stopped: %s' % error)
+                self.updating = False
+                self.root.after(0, lambda: self._show_update_state(UPDATE_GATE.peek()))
+        threading.Thread(target=worker, daemon=True).start()
+
     def refresh(self):
+        self._apply_update_lock()
         self.path_var.set(self.ufi_dir or 'UFI.exe not found - use Browse')
         self.how_label.configure(text=('found via %s   |   Windows %s' % (self.how, windows_build()))
                                  if self.ufi_dir else 'Windows %s' % windows_build())
@@ -1031,8 +1213,16 @@ class Gui(object):
         if not self.messagebox.askyesno(APP, 'Put every UFI shortcut back to the original UFI.exe?'):
             return
         self.say('restoring shortcuts ...')
-        restore_shortcuts(self.ufi_dir, self._tool_path(), self.say)
-        self.say('done - UFI will start unpatched again (and will crash on 24H2)')
+        result = restore_shortcuts(self.ufi_dir, self._tool_path(), self.say)
+        if result['success']:
+            checked = result['restored'] + result['repaired'] + result['already_original']
+            self.say(('Verified: %d toolbox shortcut(s) point directly to UFI.exe.' % checked)
+                     if checked else 'No toolbox shortcuts were found to restore.')
+            self.say('UFI-Fix remains available from its own manager icon.')
+            self.say('Already running UFI processes are unchanged; close them normally before checking a fresh launch.')
+        else:
+            self.say('Undo is incomplete. Some shortcuts could not be restored or verified; retry after resolving the reported errors.')
+            self.messagebox.showwarning(APP, 'Undo is incomplete. Check the Activity log; success was not confirmed.')
 
     def launch(self, arg):
         if not self.ufi_dir:
@@ -1049,17 +1239,24 @@ class Gui(object):
             self.say('nothing logged yet')
 
     def run(self):
-        self.say('%s %s (%s) ready.' % (APP, VERSION, BUILD_CHANNEL))
+        self.say('%s %s (%s) started; checking required updates.' % (APP, VERSION, BUILD_CHANNEL))
         if self.ufi_dir:
             self.say('UFI found at %s (%s)' % (self.ufi_dir, self.how))
         else:
             self.say('UFI.exe was not found automatically - use Browse to point at its folder.')
+        self.root.after(100, self.update_tick)
         self.root.mainloop()
 
 
 # --------------------------------------------------------------------- main
 def headless(arg):
     """started from a shortcut: no window, just fix and run"""
+    try:
+        UPDATE_GATE.require_current()
+    except UpdateError:
+        # A locked shortcut opens the update UI instead of silently starting UFI.
+        Gui().run()
+        return 3
     cfg = load_config()
     ufi_dir, _how = find_ufi_dir(cfg.get('ufi_dir'))
     if not ufi_dir:
@@ -1084,7 +1281,7 @@ def main():
             return 1
         if a in ('--restore', '/restore'):
             d, _ = find_ufi_dir()
-            return 0 if d and restore_shortcuts(d, '') >= 0 else 1
+            return 0 if d and restore_shortcuts(d, '')['success'] else 1
         if a in ('--uninstall', '/uninstall'):
             if not is_admin():
                 return 0 if relaunch_as_admin(['--uninstall']) else 1

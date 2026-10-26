@@ -12,6 +12,14 @@ from unittest import mock
 
 @unittest.skipUnless(os.name == 'nt', 'Windows process access rights')
 class SuspendTests(unittest.TestCase):
+    def setUp(self):
+        permission = mock.patch.object(self.app.UPDATE_GATE, 'require_current')
+        permission.start()
+        self.addCleanup(permission.stop)
+        logging = mock.patch.object(self.app, 'log', side_effect=lambda text: '2000-01-01 ' + text)
+        logging.start()
+        self.addCleanup(logging.stop)
+
     @classmethod
     def setUpClass(cls):
         source = Path(__file__).resolve().parents[1] / 'src'
